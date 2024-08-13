@@ -1,0 +1,151 @@
+import pytorch_lightning as pl
+import torch
+from torch.utils.data import Dataset, DataLoader, random_split
+from transformers import DetrForObjectDetection, DetrImageProcessor
+from PIL import Image
+from pytorch_lightning.callbacks import ModelCheckpoint
+import os
+import json
+from torchvision import transforms as T
+from pytorch_lightning import Trainer
+
+
+class CustomCocoDataset(Dataset):
+    def __init__(self, images_path, annotations_path, transforms=None):
+        self.images_path = images_path
+        self.transforms = transforms
+        self.processor = DetrImageProcessor.from_pretrained("facebook/detr-resnet-50")
+        with open(annotations_path) as f:
+            self.annotations = json.load(f)
+        self.image_ids = [ann['id'] for ann in self.annotations['images']]
+
+    def __len__(self):
+        return len(self.image_ids)
+
+    def __getitem__(self, idx):
+        image_id = self.image_ids[idx]
+        image_info = next(item for item in self.annotations['images'] if item['id'] == image_id)
+        image_path = os.path.join(self.images_path, image_info['file_name'])
+        image = Image.open(image_path).convert("RGB")
+
+        if self.transforms:
+            image = self.transforms(image)
+
+        pixel_values = self.processor(images=image, return_tensors="pt").pixel_values.squeeze(0)
+
+        annotations = [ann for ann in self.annotations['annotations'] if ann['image_id'] == image_id]
+        labels = []
+        boxes = []
+        for ann in annotations:
+            labels.append(ann['category_id'])
+            boxes.append(ann['bbox'])
+
+        target = {"labels": torch.tensor(labels), "boxes": torch.tensor(boxes)}
+
+        return {"pixel_values": pixel_values, "target": target}
+
+
+transform = T.Compose([
+    T.ColorJitter(brightness=(0.2, 0.5), contrast=(0.2, 0.5), saturation=(0.2, 0.5), hue=(0.1, 0.3)),
+    T.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0)),
+    T.RandomGrayscale(p=0.2),
+    T.RandomEqualize(p=0.1),
+    T.RandomAdjustSharpness(sharpness_factor=2, p=0.1),
+    T.ToTensor(),
+    T.ConvertImageDtype(torch.float32)
+])
+
+
+class Detr(pl.LightningModule):
+    def __init__(self, lr, lr_backbone, weight_decay, num_labels):
+        super().__init__()
+        self.model = DetrForObjectDetection.from_pretrained("facebook/detr-resnet-50",
+                                                            num_labels=num_labels,
+                                                            ignore_mismatched_sizes=True)
+        self.lr = lr
+        self.lr_backbone = lr_backbone
+        self.weight_decay = weight_decay
+
+    def forward(self, pixel_values, pixel_mask):
+        outputs = self.model(pixel_values=pixel_values, pixel_mask=pixel_mask)
+        return outputs
+
+    def common_step(self, batch, batch_idx):
+        pixel_values = batch["pixel_values"]
+        target = batch["target"]
+
+        outputs = self.model(pixel_values=pixel_values, labels=target["labels"],
+                             bbox=target["boxes"])
+        loss = outputs.loss
+        loss_dict = outputs.loss_dict
+
+        return loss, loss_dict
+
+    def training_step(self, batch, batch_idx):
+        loss, loss_dict = self.common_step(batch, batch_idx)
+        self.log("training_loss", loss)
+        for k, v in loss_dict.items():
+            self.log("train_" + k, v.item())
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        loss, loss_dict = self.common_step(batch, batch_idx)
+        self.log("validation_loss", loss)
+        for k, v in loss_dict.items():
+            self.log("validation_" + k, v.item())
+        return loss
+
+    def configure_optimizers(self):
+        param_dicts = [
+            {"params": [p for n, p in self.named_parameters() if "backbone" not in n and p.requires_grad]},
+            {"params": [p for n, p in self.named_parameters() if "backbone" in n and p.requires_grad],
+             "lr": self.lr_backbone},
+        ]
+        optimizer = torch.optim.AdamW(param_dicts, lr=self.lr, weight_decay=self.weight_decay)
+        return optimizer
+
+    def train_dataloader(self):
+        dataset = CustomCocoDataset(images_path, annotations_path, transforms=transform)
+        train_size = int(0.8 * len(dataset))
+        val_size = len(dataset) - train_size
+        train_dataset, _ = random_split(dataset, [train_size, val_size])
+
+        train_dataloader = DataLoader(train_dataset, batch_size=12, shuffle=True,
+                                      collate_fn=lambda x: tuple(zip(*x)),
+                                      pin_memory=True)
+        return train_dataloader
+
+    def val_dataloader(self):
+        dataset = CustomCocoDataset(images_path, annotations_path, transforms=transform)
+        train_size = int(0.8 * len(dataset))
+        val_size = len(dataset) - train_size
+        _, val_dataset = random_split(dataset, [train_size, val_size])
+
+        val_dataloader = DataLoader(val_dataset, batch_size=12, shuffle=False,
+                                    collate_fn=lambda x: tuple(zip(*x)),
+                                    pin_memory=True)
+        return val_dataloader
+
+
+images_path = '/data/malaria_proj/building_data/unification/models/images'
+annotations_path = 'coco_annotations.json'
+num_labels = 2  # Number of classes (adjust as needed)
+model = Detr(lr=1e-4, lr_backbone=1e-5, weight_decay=1e-4, num_labels=num_labels)
+
+checkpoint_callback = ModelCheckpoint(
+    monitor='validation_loss',
+    dirpath='checkpoints/',
+    filename='model-{epoch:02d}-{validation_loss:.2f}',
+    save_top_k=1,
+    mode='min'
+)
+
+trainer = Trainer(max_steps=300, gradient_clip_val=0.1, callbacks=[checkpoint_callback])
+trainer.fit(model)
+
+save_dir = "saved_model/"
+os.makedirs(save_dir, exist_ok=True)
+model_path = os.path.join(save_dir, "final_model.pth")
+torch.save(model.state_dict(), model_path)
+print(f"Model saved to {model_path}")
+
