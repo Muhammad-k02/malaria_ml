@@ -1,0 +1,24 @@
+
+
+Model 1: Transformations
+
+transform = Compose([
+<     ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+<     GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
+<     ToTensor()
+---
+
+Model 2: Transformations
+
+> 
+> transform = T.Compose([
+>     T.ColorJitter(brightness=(0.2, 0.5), contrast=(0.2, 0.5), saturation=(0.2, 0.5), hue=(0.1, 0.3)),
+>     # Ensure RandomPhotometricDistort is defined and imported correctly
+>     # T.RandomPhotometricDistort(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+>     T.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0)),
+>     T.RandomGrayscale(p=0.2),
+>     T.RandomEqualize(p=0.1),
+>     T.RandomAdjustSharpness(sharpness_factor=2, p=0.1),
+>     T.ToTensor(),  # Assuming ToImage() should be replaced with ToTensor()
+>     T.ConvertImageDtype(torch.float32)  # Assuming ToDtype() should be replaced with ConvertImageDtype()
+
