@@ -3,8 +3,8 @@ train: images/train  # Path to the training images
 val: images/val      # Path to the validation images
 
 # Number of classes
-nc: 1
+nc: 2
 
 # Class names
-names: ['building']
+names: ['building','background']
 
