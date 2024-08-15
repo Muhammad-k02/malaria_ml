@@ -6,5 +6,5 @@ val: images/val      # Path to the validation images
 nc: 2
 
 # Class names
-names: ['building','background']
+names: ['background','building']
 
