@@ -9,7 +9,7 @@ model = YOLO('yolov8m.pt')  # You can use 'yolov8n.yaml' for a small model or ot
 # Train the model
 model.train(
     data=yaml_path,       # Path to the dataset YAML file
-    epochs=150,            # Number of epochs to train
+    epochs=75,            # Number of epochs to train
     device='0,1'
     
 )
